@@ -95,6 +95,7 @@ function getProxyPool() {
     }
     
     const defaultProxies = [
+        // Batch 1 (vqvtbsll)
         'vqvtbsll:delzv7dc3d6h@31.59.20.176:6754',
         'vqvtbsll:delzv7dc3d6h@31.56.127.193:7684',
         'vqvtbsll:delzv7dc3d6h@45.38.107.97:6014',
@@ -105,6 +106,8 @@ function getProxyPool() {
         'vqvtbsll:delzv7dc3d6h@84.247.60.125:6095',
         'vqvtbsll:delzv7dc3d6h@142.111.67.146:5611',
         'vqvtbsll:delzv7dc3d6h@191.96.254.138:6185',
+
+        // Batch 2 (jeifitnv)
         'jeifitnv:s1pibxrtd5hx@31.59.20.176:6754',
         'jeifitnv:s1pibxrtd5hx@31.56.127.193:7684',
         'jeifitnv:s1pibxrtd5hx@45.38.107.97:6014',
@@ -114,7 +117,19 @@ function getProxyPool() {
         'jeifitnv:s1pibxrtd5hx@38.154.185.97:6370',
         'jeifitnv:s1pibxrtd5hx@84.247.60.125:6095',
         'jeifitnv:s1pibxrtd5hx@142.111.67.146:5611',
-        'jeifitnv:s1pibxrtd5hx@191.96.254.138:6185'
+        'jeifitnv:s1pibxrtd5hx@191.96.254.138:6185',
+
+        // Batch 3 (uidqjnvk)
+        'uidqjnvk:j57c2390c6uj@31.59.20.176:6754',
+        'uidqjnvk:j57c2390c6uj@45.38.107.97:6014',
+        'uidqjnvk:j57c2390c6uj@198.105.121.200:6462',
+        'uidqjnvk:j57c2390c6uj@64.137.96.74:6641',
+        'uidqjnvk:j57c2390c6uj@198.23.243.226:6361',
+        'uidqjnvk:j57c2390c6uj@38.154.185.97:6370',
+        'uidqjnvk:j57c2390c6uj@84.247.60.125:6095',
+        'uidqjnvk:j57c2390c6uj@142.111.67.146:5611',
+        'uidqjnvk:j57c2390c6uj@191.96.254.138:6185',
+        'uidqjnvk:j57c2390c6uj@31.58.9.4:6077'
     ];
     saveProxyPool(defaultProxies);
     return defaultProxies;
@@ -478,31 +493,21 @@ function setupClientLoop(tokenUserId, session) {
     // AUTO-RESPONDER (SENDS ONLY ONCE PER USER DM)
     // ==========================================
     if (session.autoResponder && session.autoResponder.trim().length > 0) {
-        const repliedUserIds = new Set(); // Tracks users already replied to
+        const repliedUserIds = new Set();
 
         userClient.on('messageCreate', async (msg) => {
             try {
-                // Must be a Direct Message
                 if (msg.guild !== null) return;
-
-                // Never respond to own user token or bots
                 if (msg.author.id === userClient.user.id || msg.author.bot) return;
-
-                // Stop execution if the campaign was terminated
                 if (!session.isRunning || session.activeClient !== userClient) return;
-
-                // Send ONLY ONCE: if already replied to this user, ignore
                 if (repliedUserIds.has(msg.author.id)) return;
 
-                // Register recipient ID immediately to prevent duplicate sends
                 repliedUserIds.add(msg.author.id);
 
-                // Simulate typing indicator
                 await msg.channel.sendTyping().catch(() => {});
-                const typingDelay = Math.floor(Math.random() * 2000) + 2000; // 2 to 4 seconds
+                const typingDelay = Math.floor(Math.random() * 2000) + 2000;
                 await new Promise(resolve => setTimeout(resolve, typingDelay));
 
-                // Append invisible variation character
                 const invisibleTokens = ['\u200B', '\u200C', '\u200D', ' '];
                 const variant = invisibleTokens[Math.floor(Math.random() * invisibleTokens.length)];
 
@@ -973,7 +978,6 @@ controlBot.on('interactionCreate', async interaction => {
                     .setValue(savedCfg && savedCfg.minDelay && savedCfg.maxDelay ? `${savedCfg.minDelay}-${savedCfg.maxDelay}` : '90-180')
                     .setRequired(true);
 
-                // Optional Auto-Responder TextInput Component (Row 5)
                 const autoResponderInput = new TextInputBuilder()
                     .setCustomId('adv_auto_responder')
                     .setLabel('Auto Responder DM (Optional - Sent Once)')
@@ -1000,7 +1004,6 @@ controlBot.on('interactionCreate', async interaction => {
                 const messageContent = interaction.fields.getTextInputValue('adv_message');
                 const delayRaw = interaction.fields.getTextInputValue('adv_delay').trim();
                 
-                // Read optional auto-responder field
                 let autoResponder = '';
                 try {
                     autoResponder = interaction.fields.getTextInputValue('adv_auto_responder')?.trim() || '';
