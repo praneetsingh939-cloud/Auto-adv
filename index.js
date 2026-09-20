@@ -155,7 +155,6 @@ function removeAssignedProxyTracking(proxyString) {
     }
 }
 
-// On startup, sweep any orphaned assigned proxies back into the main pool immediately (Handles hard crashes)
 function recoverOrphanedProxiesOnStartup() {
     try {
         if (fs.existsSync(ASSIGNED_PROXIES_FILE)) {
@@ -198,7 +197,6 @@ function returnAllActiveProxies() {
             }
         }
 
-        // Also check disk assigned tracking
         if (fs.existsSync(ASSIGNED_PROXIES_FILE)) {
             const assigned = JSON.parse(fs.readFileSync(ASSIGNED_PROXIES_FILE, 'utf8'));
             for (const p of assigned) {
@@ -219,21 +217,9 @@ function returnAllActiveProxies() {
     }
 }
 
-// Safety hooks
-process.on('exit', () => {
-    returnAllActiveProxies();
-});
-
-process.on('SIGINT', () => {
-    returnAllActiveProxies();
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    returnAllActiveProxies();
-    process.exit(0);
-});
-
+process.on('exit', () => { returnAllActiveProxies(); });
+process.on('SIGINT', () => { returnAllActiveProxies(); process.exit(0); });
+process.on('SIGTERM', () => { returnAllActiveProxies(); process.exit(0); });
 process.on('uncaughtException', (err) => {
     console.error('[Uncaught Exception]:', err);
     returnAllActiveProxies();
@@ -261,9 +247,8 @@ setInterval(async () => {
     const memoryUsageMB = process.memoryUsage().rss / 1024 / 1024;
     const heapUsedMB = process.memoryUsage().heapUsed / 1024 / 1024;
     
-    // Proactive trigger set lower (~550MB RSS) to cleanly catch it *before* V8 throws a hard OOM crash
     if (memoryUsageMB >= 550 || heapUsedMB >= 380) {
-        console.log(`[Memory Guardian] RAM usage reached RSS: ${memoryUsageMB.toFixed(2)} MB, Heap: ${heapUsedMB.toFixed(2)} MB. Notifying users, returning assigned proxies to pool and restarting process safely...`);
+        console.log(`[Memory Guardian] RAM usage reached RSS: ${memoryUsageMB.toFixed(2)} MB, Heap: ${heapUsedMB.toFixed(2)} MB. Restarting safely...`);
         
         const panelUserIdsToNotify = new Set();
         for (const [tokenUserId, session] of activeSessions.entries()) {
@@ -276,7 +261,6 @@ setInterval(async () => {
         }
 
         await Promise.all(Array.from(panelUserIdsToNotify).map(id => notifyMemoryRestart(id)));
-
         returnAllActiveProxies();
         process.exit(1);
     }
@@ -435,7 +419,6 @@ async function validateAndStartCampaign(panelUserId, token, proxyString, targetC
 
         const actualTokenUserId = testClient.user.id;
 
-        // Validate target channels
         for (const channelId of targetChannels) {
             const channel = await testClient.channels.fetch(channelId).catch(() => null);
             if (!channel) {
@@ -444,7 +427,6 @@ async function validateAndStartCampaign(panelUserId, token, proxyString, targetC
             }
         }
 
-        // Clean up previous token session if exists
         if (activeSessions.has(actualTokenUserId)) {
             const existing = activeSessions.get(actualTokenUserId);
             if (existing.activeClient) {
@@ -469,6 +451,7 @@ async function validateAndStartCampaign(panelUserId, token, proxyString, targetC
             messageContent: '',
             minDelay: 90,
             maxDelay: 180,
+            autoResponder: '',
             userToken: token,
             activeClient: testClient,
             currentProxy: proxyString,
@@ -491,6 +474,49 @@ function setupClientLoop(tokenUserId, session) {
     const userClient = session.activeClient;
     console.log(`[Selfbot Engine] Successfully authenticated as ${userClient.user.tag} with dedicated proxy routing`);
 
+    // ==========================================
+    // AUTO-RESPONDER (SENDS ONLY ONCE PER USER DM)
+    // ==========================================
+    if (session.autoResponder && session.autoResponder.trim().length > 0) {
+        const repliedUserIds = new Set(); // Tracks users already replied to
+
+        userClient.on('messageCreate', async (msg) => {
+            try {
+                // Must be a Direct Message
+                if (msg.guild !== null) return;
+
+                // Never respond to own user token or bots
+                if (msg.author.id === userClient.user.id || msg.author.bot) return;
+
+                // Stop execution if the campaign was terminated
+                if (!session.isRunning || session.activeClient !== userClient) return;
+
+                // Send ONLY ONCE: if already replied to this user, ignore
+                if (repliedUserIds.has(msg.author.id)) return;
+
+                // Register recipient ID immediately to prevent duplicate sends
+                repliedUserIds.add(msg.author.id);
+
+                // Simulate typing indicator
+                await msg.channel.sendTyping().catch(() => {});
+                const typingDelay = Math.floor(Math.random() * 2000) + 2000; // 2 to 4 seconds
+                await new Promise(resolve => setTimeout(resolve, typingDelay));
+
+                // Append invisible variation character
+                const invisibleTokens = ['\u200B', '\u200C', '\u200D', ' '];
+                const variant = invisibleTokens[Math.floor(Math.random() * invisibleTokens.length)];
+
+                await msg.channel.send(`${session.autoResponder} ${variant}`);
+                console.log(`[Auto-Responder] Sent one-time auto-reply to ${msg.author.tag} (${msg.author.id})`);
+            } catch (err) {
+                console.error(`[Auto-Responder Error] Could not reply to ${msg.author.id}:`, err.message);
+            }
+        });
+    }
+
+    // ==========================================
+    // BROADCAST CAMPAIGN LOOP
+    // ==========================================
     const initialDelaySecs = Math.floor(Math.random() * (session.maxDelay - session.minDelay + 1)) + session.minDelay;
 
     const runLoop = async () => {
@@ -586,6 +612,7 @@ controlBot.on('interactionCreate', async interaction => {
                 messageContent: '',
                 minDelay: 90,
                 maxDelay: 180,
+                autoResponder: '',
                 userToken: null,
                 activeClient: null,
                 currentProxy: null,
@@ -899,6 +926,7 @@ controlBot.on('interactionCreate', async interaction => {
                 session.messageContent = savedCfg.messageContent;
                 session.minDelay = savedCfg.minDelay || 90;
                 session.maxDelay = savedCfg.maxDelay || 180;
+                session.autoResponder = savedCfg.autoResponder || '';
 
                 setupClientLoop(tokenUserId, session);
 
@@ -945,11 +973,21 @@ controlBot.on('interactionCreate', async interaction => {
                     .setValue(savedCfg && savedCfg.minDelay && savedCfg.maxDelay ? `${savedCfg.minDelay}-${savedCfg.maxDelay}` : '90-180')
                     .setRequired(true);
 
+                // Optional Auto-Responder TextInput Component (Row 5)
+                const autoResponderInput = new TextInputBuilder()
+                    .setCustomId('adv_auto_responder')
+                    .setLabel('Auto Responder DM (Optional - Sent Once)')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Leave blank to disable. Sends once when someone DMs you...')
+                    .setValue(savedCfg && savedCfg.autoResponder ? savedCfg.autoResponder : '')
+                    .setRequired(false);
+
                 modal.addComponents(
                     new ActionRowBuilder().addComponents(tokenInput),
                     new ActionRowBuilder().addComponents(channelsInput),
                     new ActionRowBuilder().addComponents(messageInput),
-                    new ActionRowBuilder().addComponents(delayInput)
+                    new ActionRowBuilder().addComponents(delayInput),
+                    new ActionRowBuilder().addComponents(autoResponderInput)
                 );
 
                 await interaction.showModal(modal);
@@ -961,6 +999,14 @@ controlBot.on('interactionCreate', async interaction => {
                 const channelsRaw = interaction.fields.getTextInputValue('adv_channels');
                 const messageContent = interaction.fields.getTextInputValue('adv_message');
                 const delayRaw = interaction.fields.getTextInputValue('adv_delay').trim();
+                
+                // Read optional auto-responder field
+                let autoResponder = '';
+                try {
+                    autoResponder = interaction.fields.getTextInputValue('adv_auto_responder')?.trim() || '';
+                } catch {
+                    autoResponder = '';
+                }
 
                 let min = 90, max = 180;
                 if (delayRaw.includes('-')) {
@@ -988,11 +1034,12 @@ controlBot.on('interactionCreate', async interaction => {
                     messageContent: messageContent,
                     minDelay: min,
                     maxDelay: max,
+                    autoResponder: autoResponder,
                     userToken: token
                 });
 
                 await interaction.reply({ 
-                    content: `✅ **Configuration Saved Successfully!**\nYou can now click **Start Advertising** to launch your campaign with these settings.`, 
+                    content: `✅ **Configuration Saved Successfully!**\nAuto-responder status: ${autoResponder ? '🟢 **Enabled (One-Time DM)**' : '⚪ **Disabled**'}\nClick **Start Advertising** to launch your campaign.`, 
                     ephemeral: true 
                 });
             }
